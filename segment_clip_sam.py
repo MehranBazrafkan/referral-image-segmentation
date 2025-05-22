@@ -1,3 +1,8 @@
+# Copyright (c) 2025 Mehran Bazrafkan
+# This code is provided for educational and review purposes only.
+# Any usage beyond reading is prohibited without explicit permission.
+# See LICENSE file for full terms.
+
 import cv2
 import torch
 import open_clip
