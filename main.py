@@ -1,4 +1,3 @@
-import os
 import cv2
 import torch
 import open_clip
@@ -48,6 +47,8 @@ print(f"🪄 Total masks generated: {len(masks)}")
 # ---------- Encode text prompt ----------
 print(f"📝 Processing text prompt: \"{user_prompt}\"")
 text_tokens = tokenizer([user_prompt]).to(device)
+with torch.no_grad():
+    text_features = model_clip.encode_text(text_tokens)
 
 # ---------- Evaluate each mask ----------
 print("🔎 Ranking masks with text using CLIP:")
@@ -60,25 +61,19 @@ for ann in tqdm(masks, desc="Scoring masks", unit="mask"):
     masked_img = image_rgb.copy()
     masked_img[~segmentation] = 0
 
-    # ✅ Get bounding box of the mask
     ys, xs = np.where(segmentation)
     x_min, x_max = xs.min(), xs.max()
     y_min, y_max = ys.min(), ys.max()
 
     segment_crop = masked_img[y_min:y_max+1, x_min:x_max+1]
-
-    # ✅ Resize keeping aspect ratio and setting longer side to 224
     h, w = segment_crop.shape[:2]
-    if h >= w:
-        new_h = 224
-        new_w = int((w / h) * 224)
-    else:
-        new_w = 224
-        new_h = int((h / w) * 224)
 
+    # Resize keeping aspect ratio
+    scale = 224 / max(h, w)
+    new_h, new_w = int(h * scale), int(w * scale)
     resized_crop = cv2.resize(segment_crop, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
-    # ✅ Pad to 224x224 to make square image for CLIP (centered)
+    # Pad to 224x224
     padded_img = np.zeros((224, 224, 3), dtype=np.uint8)
     y_offset = (224 - new_h) // 2
     x_offset = (224 - new_w) // 2
@@ -89,19 +84,16 @@ for ann in tqdm(masks, desc="Scoring masks", unit="mask"):
 
     with torch.no_grad():
         image_features = model_clip.encode_image(clip_input)
-        text_features = model_clip.encode_text(text_tokens)
         similarity = (image_features @ text_features.T).squeeze().item()
 
-        similarities.append(similarity)
-        segmentations.append(segmentation)
+    similarities.append(similarity)
+    segmentations.append(segmentation)
 
+# ---------- Softmax & Score Filtering ----------
 similarities_tensor = torch.tensor(similarities)
 softmax_scores = torch.softmax(similarities_tensor, dim=0).numpy()
-
-# Pair each mask with its softmaxed similarity
 scored_masks = list(zip(segmentations, softmax_scores))
 
-# Optional: print each score
 for i, score in enumerate(softmax_scores):
     tqdm.write(f"📏 Mask {i:03}: Cosine similarity = {score:.4f}")
 
@@ -109,12 +101,11 @@ for i, score in enumerate(softmax_scores):
 print(f"📊 Selecting masks with similarity > {similarity_threshold}...")
 filtered_masks = [seg for seg, sim in scored_masks if sim >= similarity_threshold]
 
-# ---------- Save output ----------
+# ---------- Save filtered result ----------
 print("💾 Saving result...")
 
-# Save filtered masks overlay
 if filtered_masks:
-    final_mask = np.any(filtered_masks, axis=0)
+    final_mask = np.any(np.stack(filtered_masks), axis=0)
     result = image_rgb.copy()
     result[~final_mask] = 0
     Image.fromarray(result).save(output_image_path)
@@ -123,8 +114,8 @@ else:
     Image.fromarray(image_rgb).save(output_image_path)
     print(f"⚠️ No matched segment above threshold. Original image saved to: {output_image_path}")
 
-# Save all masks overlay
-all_masks_overlay = np.zeros((image_rgb.shape[0], image_rgb.shape[1], 3), dtype=np.uint8)
+# ---------- Save all masks overlay ----------
+all_masks_overlay = np.zeros_like(image_rgb)
 for ann in masks:
     m = ann['segmentation']
     color_mask = np.random.randint(0, 255, (1, 3), dtype=np.uint8)
